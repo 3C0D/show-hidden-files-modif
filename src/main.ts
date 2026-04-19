@@ -1,4 +1,6 @@
-import { Plugin, PluginSettingTab, Setting, App, TFolder, Menu, Modal, Notice } from 'obsidian';
+import { Plugin, PluginSettingTab, Setting, TFolder, Modal, Notice } from 'obsidian';
+import type { App } from 'obsidian';
+import type { DataAdapterEx } from 'obsidian-typings';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -21,30 +23,21 @@ interface HiddenItem {
 	size: number;
 }
 
-interface PrivateAdapter {
-	reconcileFileInternal?(realPath: string, path: string): Promise<void>;
-	reconcileFolderCreation(realPath: string, path: string): Promise<void>;
-	reconcileDeletion(realPath: string, path: string): Promise<void>;
-	getRealPath(path: string): string;
-	getFullPath(path: string): string;
-	basePath: string;
-}
-
 export default class ShowHiddenFilesPlugin extends Plugin {
 	settings!: HiddenFilesSettings;
 
-	async onload() {
+	async onload(): Promise<void> {
 		await this.loadSettings();
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
 				if (file instanceof TFolder) {
 					const folderPath = file.path;
-					const hasRevealed = this.settings.revealedFiles[folderPath]?.length > 0;
+					const hasRevealed =
+						this.settings.revealedFiles[folderPath]?.length > 0;
 
 					menu.addItem((item) => {
-						item
-							.setTitle('Montrer les fichiers cachés')
+						item.setTitle('Montrer les fichiers cachés')
 							.setIcon('eye')
 							.onClick(() => {
 								new HiddenFilesModal(this.app, this, folderPath).open();
@@ -53,8 +46,7 @@ export default class ShowHiddenFilesPlugin extends Plugin {
 
 					if (hasRevealed) {
 						menu.addItem((item) => {
-							item
-								.setTitle('Masquer les fichiers cachés')
+							item.setTitle('Masquer les fichiers cachés')
 								.setIcon('eye-off')
 								.onClick(async () => {
 									await this.hideFilesInFolder(folderPath);
@@ -68,20 +60,16 @@ export default class ShowHiddenFilesPlugin extends Plugin {
 		this.addSettingTab(new HiddenFilesSettingTab(this.app, this));
 	}
 
-	async loadSettings() {
+	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 	}
 
-	async saveSettings() {
+	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
 
-	getAdapter(): PrivateAdapter {
-		return this.app.vault.adapter as any;
-	}
-
 	getBasePath(): string {
-		return this.getAdapter().basePath;
+		return (this.app.vault.adapter as DataAdapterEx).basePath;
 	}
 
 	scanHiddenFiles(folderPath: string): HiddenItem[] {
@@ -126,7 +114,7 @@ export default class ShowHiddenFilesPlugin extends Plugin {
 						isFolder,
 						size: stat.size
 					});
-				} catch (e) {
+				} catch {
 					// Ignorer les erreurs de permission
 				}
 			}
@@ -143,25 +131,23 @@ export default class ShowHiddenFilesPlugin extends Plugin {
 		return items;
 	}
 
-	async revealFiles(folderPath: string, itemPaths: string[]) {
+	async revealFiles(folderPath: string, itemPaths: string[]): Promise<void> {
 		const adapter = this.getAdapter();
 		const basePath = this.getBasePath();
 
 		for (const itemPath of itemPaths) {
 			const realPath = adapter.getRealPath(itemPath);
 			const fullPath = path.join(basePath, itemPath);
-			
+
 			try {
 				const stat = fs.statSync(fullPath);
-				
+
 				if (stat.isDirectory()) {
 					// Révéler un dossier
 					await adapter.reconcileFolderCreation(realPath, itemPath);
 				} else {
 					// Révéler un fichier
-					if (adapter.reconcileFileInternal) {
-						await adapter.reconcileFileInternal(realPath, itemPath);
-					}
+					await adapter.reconcileInternalFile(itemPath);
 				}
 			} catch (e) {
 				console.error(`Erreur révélation ${itemPath}:`, e);
@@ -173,7 +159,7 @@ export default class ShowHiddenFilesPlugin extends Plugin {
 		new Notice(`${itemPaths.length} élément(s) révélé(s)`);
 	}
 
-	async hideFilesInFolder(folderPath: string) {
+	async hideFilesInFolder(folderPath: string): Promise<void> {
 		const adapter = this.getAdapter();
 		const revealed = this.settings.revealedFiles[folderPath] || [];
 
@@ -201,7 +187,7 @@ class HiddenFilesModal extends Modal {
 		this.items = plugin.scanHiddenFiles(folderPath);
 	}
 
-	onOpen() {
+	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('hidden-files-modal');
@@ -231,7 +217,7 @@ class HiddenFilesModal extends Modal {
 			const icon = itemEl.createSpan({ cls: 'hidden-file-icon' });
 			icon.textContent = item.isFolder ? '📁' : '📄';
 
-			const name = itemEl.createSpan({ cls: 'hidden-file-name', text: item.name });
+			itemEl.createSpan({ cls: 'hidden-file-name', text: item.name });
 
 			if (!item.isFolder) {
 				const size = itemEl.createSpan({ cls: 'hidden-file-size' });
@@ -241,13 +227,18 @@ class HiddenFilesModal extends Modal {
 
 		const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
 
-		const selectAllBtn = buttonContainer.createEl('button', { text: 'Tout sélectionner' });
+		const selectAllBtn = buttonContainer.createEl('button', {
+			text: 'Tout sélectionner'
+		});
 		selectAllBtn.addEventListener('click', () => {
-			this.items.forEach(item => this.selected.add(item.path));
+			this.items.forEach((item) => this.selected.add(item.path));
 			this.onOpen(); // Refresh
 		});
 
-		const revealBtn = buttonContainer.createEl('button', { text: 'Révéler', cls: 'mod-cta' });
+		const revealBtn = buttonContainer.createEl('button', {
+			text: 'Révéler',
+			cls: 'mod-cta'
+		});
 		revealBtn.addEventListener('click', async () => {
 			if (this.selected.size > 0) {
 				await this.plugin.revealFiles(this.folderPath, Array.from(this.selected));
@@ -265,7 +256,7 @@ class HiddenFilesModal extends Modal {
 		return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 	}
 
-	onClose() {
+	onClose(): void {
 		const { contentEl } = this;
 		contentEl.empty();
 	}
@@ -288,33 +279,39 @@ class HiddenFilesSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Dossiers exclus')
 			.setDesc('Dossiers cachés à ne jamais afficher (séparés par des virgules)')
-			.addText(text => text
-				.setPlaceholder('.git, node_modules, .trash')
-				.setValue(this.plugin.settings.excludedFolders.join(', '))
-				.onChange(async (value) => {
-					this.plugin.settings.excludedFolders = value
-						.split(',')
-						.map(s => s.trim())
-						.filter(s => s.length > 0);
-					await this.plugin.saveSettings();
-				}));
+			.addText((text) =>
+				text
+					.setPlaceholder('.git, node_modules, .trash')
+					.setValue(this.plugin.settings.excludedFolders.join(', '))
+					.onChange(async (value) => {
+						this.plugin.settings.excludedFolders = value
+							.split(',')
+							.map((s) => s.trim())
+							.filter((s) => s.length > 0);
+						await this.plugin.saveSettings();
+					})
+			);
 
 		new Setting(containerEl)
 			.setName('Extensions exclues')
-			.setDesc('Extensions de fichiers cachés à exclure (sans le point, séparées par des virgules)')
-			.addText(text => text
-				.setPlaceholder('tmp, log, cache')
-				.setValue(this.plugin.settings.excludedExtensions.join(', '))
-				.onChange(async (value) => {
-					this.plugin.settings.excludedExtensions = value
-						.split(',')
-						.map(s => s.trim())
-						.filter(s => s.length > 0);
-					await this.plugin.saveSettings();
-				}));
+			.setDesc(
+				'Extensions de fichiers cachés à exclure (sans le point, séparées par des virgules)'
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder('tmp, log, cache')
+					.setValue(this.plugin.settings.excludedExtensions.join(', '))
+					.onChange(async (value) => {
+						this.plugin.settings.excludedExtensions = value
+							.split(',')
+							.map((s) => s.trim())
+							.filter((s) => s.length > 0);
+						await this.plugin.saveSettings();
+					})
+			);
 
 		containerEl.createEl('h3', { text: 'Dossiers dangereux supplémentaires' });
-		containerEl.createEl('p', { 
+		containerEl.createEl('p', {
 			text: 'Suggestions: .svn, .hg, .bzr, CVS, __pycache__, .pytest_cache, .mypy_cache, .tox, .venv, .env',
 			cls: 'setting-item-description'
 		});
